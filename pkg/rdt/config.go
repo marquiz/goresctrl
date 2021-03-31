@@ -435,6 +435,16 @@ func listStrToArray(str string) ([]int, error) {
 	return a, nil
 }
 
+// Validate validates that the config is resolvable
+func (raw *Config) Validate() error {
+	if info == nil {
+		return fmt.Errorf("RDT not initialized")
+	}
+
+	_, err := (*raw).resolve()
+	return err
+}
+
 // resolve tries to resolve the requested configuration into a working
 // configuration
 func (raw Config) resolve() (config, error) {
