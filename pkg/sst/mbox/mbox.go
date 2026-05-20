@@ -311,7 +311,193 @@ func TFSetStatus(cpu uint16, ppCurrentLevel int, enable bool) error {
 	return nil
 }
 
-// getBits extracts bits i..j (inclusive) from val.
+// GetLevelCoreMask64 reads the 64-bit punit core bitmask for a PP level.
+func GetLevelCoreMask64(cpu uint16, level int) (uint64, error) {
+	lo, err := isst.SendMboxCmd(cpu, isst.CONFIG_TDP, isst.CONFIG_TDP_GET_CORE_MASK, 0, uint32(level))
+	if err != nil {
+		return 0, fmt.Errorf("failed to read level core mask (lo) at level %d: %w", level, err)
+	}
+	hi, err := isst.SendMboxCmd(cpu, isst.CONFIG_TDP, isst.CONFIG_TDP_GET_CORE_MASK, 0, uint32(level|(1<<8)))
+	if err != nil {
+		return 0, fmt.Errorf("failed to read level core mask (hi) at level %d: %w", level, err)
+	}
+	return uint64(lo) | (uint64(hi) << 32), nil
+}
+
+// P1LevelInfo holds base frequency ratios per ISA for one PP level.
+type P1LevelInfo struct {
+	SSE    int // ratio; ×100 = MHz
+	AVX2   int // ratio; ×100 = MHz
+	AVX512 int // ratio; ×100 = MHz
+	AMX    int // ratio; ×100 = MHz
+}
+
+// GetP1LevelInfo reads base frequency ratios (SSE/AVX2/AVX512/AMX) for one PP level.
+func GetP1LevelInfo(cpu uint16, level int) (P1LevelInfo, error) {
+	rsp, err := isst.SendMboxCmd(cpu, isst.CONFIG_TDP, isst.CONFIG_TDP_GET_P1_INFO, 0, uint32(level))
+	if err != nil {
+		return P1LevelInfo{}, fmt.Errorf("failed to read P1 info at level %d: %w", level, err)
+	}
+	return P1LevelInfo{
+		SSE:    int(getBits(rsp, 0, 7)),
+		AVX2:   int(getBits(rsp, 8, 15)),
+		AVX512: int(getBits(rsp, 16, 23)),
+		AMX:    int(getBits(rsp, 24, 31)),
+	}, nil
+}
+
+// TDPLevelInfo holds TDP and thermal data for one PP level.
+type TDPLevelInfo struct {
+	TDPRatio     int // ratio; ×100 = MHz
+	TDP          int // W
+	TjunctionMax int // °C
+}
+
+// GetTDPLevelInfo reads TDP ratio, TDP, and TjMax for one PP level.
+func GetTDPLevelInfo(cpu uint16, level int) (TDPLevelInfo, error) {
+	tdp, err := isst.SendMboxCmd(cpu, isst.CONFIG_TDP, isst.CONFIG_TDP_GET_TDP_INFO, 0, uint32(level))
+	if err != nil {
+		return TDPLevelInfo{}, fmt.Errorf("failed to read TDP info at level %d: %w", level, err)
+	}
+	tjmax, err := isst.SendMboxCmd(cpu, isst.CONFIG_TDP, isst.CONFIG_TDP_GET_TJMAX_INFO, 0, uint32(level))
+	if err != nil {
+		return TDPLevelInfo{}, fmt.Errorf("failed to read TjMax at level %d: %w", level, err)
+	}
+	return TDPLevelInfo{
+		TDPRatio:     int(getBits(tdp, 16, 23)),
+		TDP:          int(getBits(tdp, 0, 14)),
+		TjunctionMax: int(getBits(tjmax, 0, 7)),
+	}, nil
+}
+
+// UncoreP0P1Info holds uncore frequency ratios for one PP level.
+type UncoreP0P1Info struct {
+	P0 int // ratio; ×100 = MHz (maximum)
+	P1 int // ratio; ×100 = MHz (base/TDP)
+}
+
+// GetUncoreP0P1Info reads uncore P0 (max) and P1 (base) frequency ratios for one PP level.
+func GetUncoreP0P1Info(cpu uint16, level int) (UncoreP0P1Info, error) {
+	rsp, err := isst.SendMboxCmd(cpu, isst.CONFIG_TDP, isst.CONFIG_TDP_GET_UNCORE_P0_P1_INFO, 0, uint32(level))
+	if err != nil {
+		return UncoreP0P1Info{}, fmt.Errorf("failed to read uncore P0/P1 info at level %d: %w", level, err)
+	}
+	return UncoreP0P1Info{
+		P0: int(getBits(rsp, 0, 7)),
+		P1: int(getBits(rsp, 8, 15)),
+	}, nil
+}
+
+// GetTRLRatios reads 8 TRL frequency ratios for a PP level and ISA level (0=SSE, 1=AVX2, 2=AVX512).
+// Returns ratios; multiply by 100 to convert to MHz.
+func GetTRLRatios(cpu uint16, level, avxLevel int) ([8]int, error) {
+	var ratios [8]int
+	lo, err := isst.SendMboxCmd(cpu, isst.CONFIG_TDP, isst.CONFIG_TDP_GET_TURBO_LIMIT_RATIOS, 0,
+		uint32(level|(avxLevel<<16)))
+	if err != nil {
+		return ratios, fmt.Errorf("failed to read TRL ratios (lo) at level %d avx %d: %w", level, avxLevel, err)
+	}
+	hi, err := isst.SendMboxCmd(cpu, isst.CONFIG_TDP, isst.CONFIG_TDP_GET_TURBO_LIMIT_RATIOS, 0,
+		uint32(level|(1<<8)|(avxLevel<<16)))
+	if err != nil {
+		return ratios, fmt.Errorf("failed to read TRL ratios (hi) at level %d avx %d: %w", level, avxLevel, err)
+	}
+	for j := range 4 {
+		ratios[j] = int(getBits(lo, uint32(j*8), uint32(j*8+7)))
+		ratios[j+4] = int(getBits(hi, uint32(j*8), uint32(j*8+7)))
+	}
+	return ratios, nil
+}
+
+// BFLevelData holds SST-BF properties for one PP level.
+type BFLevelData struct {
+	HighPriorityBaseFreqRatio int // ratio; ×100 = MHz
+	LowPriorityBaseFreqRatio  int // ratio; ×100 = MHz
+	TjunctionMax              int // °C
+	TDP                       int // W
+	CoreMask                  uint64
+}
+
+// GetBFLevelData reads SST-BF properties for one PP level.
+func GetBFLevelData(cpu uint16, level int) (BFLevelData, error) {
+	p1, err := isst.SendMboxCmd(cpu, isst.CONFIG_TDP, isst.CONFIG_TDP_PBF_GET_P1HI_P1LO_INFO, 0, uint32(level))
+	if err != nil {
+		return BFLevelData{}, fmt.Errorf("failed to read BF P1HI/P1LO at level %d: %w", level, err)
+	}
+	tdp, err := isst.SendMboxCmd(cpu, isst.CONFIG_TDP, isst.CONFIG_TDP_PBF_GET_TDP_INFO, 0, uint32(level))
+	if err != nil {
+		return BFLevelData{}, fmt.Errorf("failed to read BF TDP at level %d: %w", level, err)
+	}
+	tjmax, err := isst.SendMboxCmd(cpu, isst.CONFIG_TDP, isst.CONFIG_TDP_PBF_GET_TJ_MAX_INFO, 0, uint32(level))
+	if err != nil {
+		return BFLevelData{}, fmt.Errorf("failed to read BF TjMax at level %d: %w", level, err)
+	}
+	lo, err := BFReadCoreMask(cpu, level, 0)
+	if err != nil {
+		return BFLevelData{}, err
+	}
+	hi, err := BFReadCoreMask(cpu, level, 1)
+	if err != nil {
+		return BFLevelData{}, err
+	}
+	return BFLevelData{
+		HighPriorityBaseFreqRatio: int(getBits(p1, 8, 15)),
+		LowPriorityBaseFreqRatio:  int(getBits(p1, 0, 7)),
+		TjunctionMax:              int(getBits(tjmax, 0, 7)),
+		TDP:                       int(getBits(tdp, 0, 15)),
+		CoreMask:                  uint64(lo) | (uint64(hi) << 32),
+	}, nil
+}
+
+// TFLevelData holds SST-TF properties for one PP level.
+// Note: Mbox TF only exposes up to 3 TRL levels (SSE=0, AVX2=1, AVX512=2).
+type TFLevelData struct {
+	LPClipRatios  [3]int      // ×100 = MHz; indices 0=SSE, 1=AVX2, 2=AVX512
+	HPCoreCounts  [8]int      // high-priority core count per bucket
+	HPTRLRatios   [3][8]int   // [avxLevel][bucket] ratio; ×100 = MHz
+}
+
+// GetTFLevelData reads SST-TF properties for one PP level.
+func GetTFLevelData(cpu uint16, level int) (TFLevelData, error) {
+	var d TFLevelData
+
+	// LP clip ratios (3 ISA levels packed in one response)
+	lp, err := isst.SendMboxCmd(cpu, isst.CONFIG_TDP, isst.CONFIG_TDP_GET_FACT_LP_CLIPPING_RATIO, 0, uint32(level))
+	if err != nil {
+		return d, fmt.Errorf("failed to read TF LP clip ratios at level %d: %w", level, err)
+	}
+	d.LPClipRatios[0] = int(getBits(lp, 0, 7))
+	d.LPClipRatios[1] = int(getBits(lp, 8, 15))
+	d.LPClipRatios[2] = int(getBits(lp, 16, 23))
+
+	// HP core counts (8 buckets, 4 per read)
+	for i := range 2 {
+		rsp, err := isst.SendMboxCmd(cpu, isst.CONFIG_TDP, isst.CONFIG_TDP_GET_FACT_HP_TURBO_LIMIT_NUMCORES, 0,
+			uint32(level|(i<<8)))
+		if err != nil {
+			return d, fmt.Errorf("failed to read TF HP core counts at level %d: %w", level, err)
+		}
+		for j := range 4 {
+			d.HPCoreCounts[i*4+j] = int(getBits(rsp, uint32(j*8), uint32(j*8+7)))
+		}
+	}
+
+	// HP TRL ratios for each ISA level (SSE, AVX2, AVX512)
+	for k := range 3 {
+		for i := range 2 {
+			rsp, err := isst.SendMboxCmd(cpu, isst.CONFIG_TDP, isst.CONFIG_TDP_GET_FACT_HP_TURBO_LIMIT_RATIOS, 0,
+				uint32(level|(i<<8)|(k<<16)))
+			if err != nil {
+				return d, fmt.Errorf("failed to read TF HP TRL ratios at level %d avx %d: %w", level, k, err)
+			}
+			for j := range 4 {
+				d.HPTRLRatios[k][i*4+j] = int(getBits(rsp, uint32(j*8), uint32(j*8+7)))
+			}
+		}
+	}
+	return d, nil
+}
+
 func getBits(val, i, j uint32) uint32 {
 	lsb := i
 	msb := j

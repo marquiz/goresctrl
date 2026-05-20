@@ -244,3 +244,45 @@ func TFSetStatus(socketID, punitID uint8, enable bool) error {
 	}
 	return nil
 }
+
+// GetPerfLevelDataInfo reads detailed data for one SST-PP performance level.
+func GetPerfLevelDataInfo(socketID, punitID uint8, level int) (isst.PerfLevelDataInfo, error) {
+	info := isst.PerfLevelDataInfo{Socket_id: socketID, Power_domain_id: punitID, Level: uint16(level)}
+	if err := isst.Ioctl(isst.ISST_IF_GET_PERF_LEVEL_INFO, uintptr(unsafe.Pointer(&info))); err != nil {
+		return isst.PerfLevelDataInfo{}, fmt.Errorf("ISST_IF_GET_PERF_LEVEL_INFO for socket %d punit %d level %d: %w", socketID, punitID, level, err)
+	}
+	return info, nil
+}
+
+// GetPerfLevelCPUMask reads the punit core bitmask for a performance level.
+func GetPerfLevelCPUMask(socketID, punitID, level uint8) (uint64, error) {
+	cpuMask := isst.PerfLevelCpuMask{
+		Socket_id:       socketID,
+		Power_domain_id: punitID,
+		Level:           level,
+		Punit_cpu_map:   1,
+	}
+	if err := isst.Ioctl(isst.ISST_IF_GET_PERF_LEVEL_CPU_MASK, uintptr(unsafe.Pointer(&cpuMask))); err != nil {
+		return 0, fmt.Errorf("ISST_IF_GET_PERF_LEVEL_CPU_MASK for socket %d punit %d level %d: %w", socketID, punitID, level, err)
+	}
+	return cpuMask.Mask, nil
+}
+
+// GetBaseFreqInfo reads SST-BF frequency info for a performance level.
+func GetBaseFreqInfo(socketID, punitID, level uint8) (isst.BaseFreqInfo, error) {
+	info := isst.BaseFreqInfo{Socket_id: socketID, Power_domain_id: punitID, Level: uint16(level)}
+	if err := isst.Ioctl(isst.ISST_IF_GET_BASE_FREQ_INFO, uintptr(unsafe.Pointer(&info))); err != nil {
+		return isst.BaseFreqInfo{}, fmt.Errorf("ISST_IF_GET_BASE_FREQ_INFO for socket %d punit %d level %d: %w", socketID, punitID, level, err)
+	}
+	return info, nil
+}
+
+// GetTurboFreqInfo reads SST-TF frequency info for a performance level.
+func GetTurboFreqInfo(socketID, punitID, level uint8) (isst.TurboFreqInfo, error) {
+	info := isst.TurboFreqInfo{Socket_id: socketID, Power_domain_id: punitID, Level: uint16(level)}
+	if err := isst.Ioctl(isst.ISST_IF_GET_TURBO_FREQ_INFO, uintptr(unsafe.Pointer(&info))); err != nil {
+		return isst.TurboFreqInfo{}, fmt.Errorf("ISST_IF_GET_TURBO_FREQ_INFO for socket %d punit %d level %d: %w", socketID, punitID, level, err)
+	}
+	return info, nil
+}
+

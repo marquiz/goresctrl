@@ -93,14 +93,70 @@ const (
 	Ordered      CPPriorityType = 1
 )
 
-// Validate reports whether p is a recognised priority type.
-func (p CPPriorityType) Validate() bool {
+// Valid reports whether p is a recognised priority type.
+func (p CPPriorityType) Valid() bool {
 	switch p {
 	case Proportional, Ordered:
 		return true
 	default:
 		return false
 	}
+}
+
+// PerfLevelInfo contains detailed SST-PP information for one performance level.
+// Indexed by punit ID in the map returned by [Package.GetInfo].
+type PerfLevelInfo struct {
+	CPUs utils.IDSet  `json:"cpus"`
+	PP   PPLevelInfo  `json:"pp"`
+	BF   *BFLevelInfo `json:"bf,omitempty"` // nil when SST-BF is not supported at this level
+	TF   *TFLevelInfo `json:"tf,omitempty"` // nil when SST-TF is not supported at this level
+}
+
+// PPLevelInfo contains core frequency and power data for one performance level.
+type PPLevelInfo struct {
+	TDPRatio         int         `json:"tdpRatio"`
+	TDP              int         `json:"tdp"`              // W
+	TjunctionMax     int         `json:"tjunctionMax"`     // °C
+	BaseFreq         int         `json:"baseFreq"`         // MHz (SSE/scalar)
+	BaseFreqAVX2     int         `json:"baseFreqAVX2"`     // MHz
+	BaseFreqAVX512   int         `json:"baseFreqAVX512"`   // MHz
+	BaseFreqAMX      int         `json:"baseFreqAMX"`      // MHz
+	MaxMemFreq       int         `json:"maxMemFreq"`       // MHz
+	UncoreMaxFreq    int         `json:"uncoreMaxFreq"`    // MHz (P0, maximum)
+	UncoreBaseFreq   int         `json:"uncoreBaseFreq"`   // MHz (P1, TDP base)
+	UncoreMinEffFreq int         `json:"uncoreMinEffFreq"` // MHz (Pn, minimum efficiency)
+	UncoreMinFreq    int         `json:"uncoreMinFreq"`    // MHz (Pm, absolute minimum)
+	CoolingType      int         `json:"coolingType"`
+	TRLBuckets       []TRLBucket `json:"trlBuckets,omitempty"`
+}
+
+// TRLBucket holds turbo ratio limit data for one bucket.
+// MaxFreqs is indexed by TRL level (0=SSE, 1=AVX2, 2=AVX512, ...).
+type TRLBucket struct {
+	CoreCount int   `json:"coreCount"`
+	MaxFreqs  []int `json:"maxFreqs"` // MHz per TRL level
+}
+
+// BFLevelInfo contains SST-BF (Base Frequency) properties for one performance level.
+type BFLevelInfo struct {
+	HighPriorityBaseFreq int         `json:"highPriorityBaseFreq"` // MHz
+	LowPriorityBaseFreq  int         `json:"lowPriorityBaseFreq"`  // MHz
+	TjunctionMax         int         `json:"tjunctionMax"`         // °C
+	TDP                  int         `json:"tdp"`                  // W
+	HighPriorityCPUs     utils.IDSet `json:"highPriorityCPUs,omitempty"`
+}
+
+// TFLevelInfo contains SST-TF (Turbo Frequency) properties for one performance level.
+// LPClipFreqs and Buckets.MaxFreqs are indexed by TRL level (0=SSE, 1=AVX2, 2=AVX512, ...).
+type TFLevelInfo struct {
+	LPClipFreqs []int      `json:"lpClipFreqs,omitempty"` // low-priority clip freq per TRL level, MHz
+	Buckets     []TFBucket `json:"buckets,omitempty"`
+}
+
+// TFBucket holds SST-TF high-priority bucket data for one performance level.
+type TFBucket struct {
+	HighPriorityCoreCount int   `json:"highPriorityCoreCount"`
+	MaxFreqs              []int `json:"maxFreqs"` // MHz per TRL level
 }
 
 // Package provides SST operations for one CPU package.
@@ -117,6 +173,12 @@ func (p *Package) ID() utils.ID {
 // GetStatus returns the current status of SST features.
 func (p *Package) GetStatus() (*PackageStatus, error) {
 	return p.h.getPackageStatus(p.pkg)
+}
+
+// GetInfo returns detailed SST-PP data for the given performance level, indexed by punit ID.
+// Returns an error if the level is not available on any punit.
+func (p *Package) GetInfo(level int) (map[utils.ID]*PerfLevelInfo, error) {
+	return p.h.getPerfLevelInfo(p.pkg, level)
 }
 
 // BFEnable enables SST-BF for this package.
@@ -200,7 +262,7 @@ func (p *Package) CPReset() error {
 
 // CPSetPriorityType sets the SST-CP priority type for this package.
 func (p *Package) CPSetPriorityType(priority CPPriorityType) error {
-	if !priority.Validate() {
+	if !priority.Valid() {
 		return fmt.Errorf("invalid CP priority type %d: must be Proportional (0) or Ordered (1)", priority)
 	}
 	for _, pu := range p.pkg.punits {
