@@ -19,13 +19,30 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
+	"log/slog"
+	"maps"
+	"net/http"
 	"os"
-	"sort"
+	"slices"
 	"strings"
 
+	"github.com/intel/goresctrl/pkg/log"
 	"github.com/intel/goresctrl/pkg/rdt"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
+
+	otelprom "go.opentelemetry.io/otel/exporters/prometheus"
+
+	"go.opentelemetry.io/otel/exporters/stdout/stdoutmetric"
+	"go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/resource"
+	semconv "go.opentelemetry.io/otel/semconv/v1.37.0"
 )
 
 var (
@@ -33,38 +50,102 @@ var (
 	groupPrefix string
 )
 
-type subCmd func([]string) error
+type subCmd struct {
+	description string
+	f           func([]string) error
+}
 
 var subCmds = map[string]subCmd{
-	"info":      subCmdInfo,
-	"configure": subCmdConfigure,
+	"configure": subCmd{
+		description: "Configure resctrl filesystem",
+		f:           subCmdConfigure,
+	},
+	"help": subCmd{
+		description: "Display this help",
+		f:           subCmdHelp,
+	},
+	"info": subCmd{
+		description: "Display information about resctrl filesystem",
+		f:           subCmdInfo,
+	},
+	"monitor": subCmd{
+		description: "Monitor resctrl groups",
+		f:           subCmdMonitor,
+	},
 }
 
 func main() {
-	cmds := make([]string, 0, len(subCmds))
-	for c := range subCmds {
-		cmds = append(cmds, c)
-	}
-	sort.Strings(cmds)
-	allCmds := strings.Join(cmds, ", ")
+	flag.CommandLine.SetOutput(os.Stdout)
+	flag.Usage = usage
 
-	if len(os.Args) < 2 {
-		exitError("missing sub-command, must be one of: %s\n", allCmds)
+	// Parse global command line flags
+	help := flag.Bool("help", false, "Display this help")
+	logLevel := log.NewLevelFlag(slog.LevelDebug)
+	flag.Var(logLevel, "log-level", "Set log level (debug, info, warn, error)")
+	flag.Parse()
+
+	if *help {
+		flag.Usage()
+		os.Exit(0)
+	}
+
+	// Set log level
+	rdt.SetLogger(slog.New(log.NewLogHandler(logLevel)))
+
+	args := flag.Args()
+	if len(args) < 1 {
+		flag.Usage()
+		os.Exit(1)
 	}
 
 	// Run sub-command
-	cmd, ok := subCmds[os.Args[1]]
+	cmd, ok := subCmds[args[0]]
 	if !ok {
-		exitError("unknown sub-command %q, must be of: %s\n", os.Args[1], allCmds)
+		fmt.Printf("unknown sub-command %q\n", args[0])
+		flag.Usage()
+		os.Exit(2)
 	}
 
-	if err := cmd(os.Args[2:]); err != nil {
-		exitError("sub-command %q failed: %v\n", os.Args[1], err)
+	if err := cmd.f(args[1:]); err != nil {
+		fmt.Printf("sub-command %q failed: %v\n", args[0], err)
+		os.Exit(1)
 	}
+}
+
+// nolint:errcheck
+func usage() {
+	f := flag.CommandLine.Output()
+	fmt.Fprint(f, `Usage: rdt <command> [options]
+
+Available commands:`)
+
+	for _, c := range slices.Sorted(maps.Keys(subCmds)) {
+		fmt.Fprintf(f, "\n  %-12s %s", c, subCmds[c].description)
+	}
+
+	fmt.Fprint(f, `
+
+Use "rdt <command> --help" for more information about a command.
+`)
+
+	fmt.Fprint(f, "\nGlobal options:\n")
+	flag.PrintDefaults()
 }
 
 func addGlobalFlags(flagset *flag.FlagSet) {
 	flagset.StringVar(&groupPrefix, "group-prefix", "", "prefix to use for resctrl groups")
+}
+
+func subCmdHelp(args []string) error {
+	// Parse command line args
+	flags := flag.NewFlagSet("help", flag.ExitOnError)
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+
+	// Run sub-command
+	flag.Usage()
+	return nil
 }
 
 func subCmdInfo(args []string) error {
@@ -137,7 +218,132 @@ func subCmdConfigure(args []string) error {
 	return nil
 }
 
-func exitError(format string, args ...interface{}) {
-	fmt.Printf("ERROR: "+format+"\n", args...)
-	os.Exit(1)
+func subCmdMonitor(args []string) error {
+	// Parse command line args
+	var (
+		flags = flag.NewFlagSet("configure", flag.ExitOnError)
+		port  = flags.Int("port", 8080, "port to serve metrics on")
+		ohttp = flags.Bool("otel-http", false, "enable OpenTelemetry/HTTP export")
+		ogrpc = flags.Bool("otel-grpc", false, "enable OpenTelemetry/gRPC export")
+		otext = flags.Duration("otel-text", 0, "OpenTelemetry/stdout export period")
+		oprom = flags.Bool("otel-prom", false, "enable OpenTelemetry/Prometheus export")
+	)
+
+	addGlobalFlags(flags)
+
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+
+	const (
+		nativePrometheus = "/metrics"
+		otelPrometheus   = "/otel-metrics"
+	)
+
+	// Run sub-command
+	if err := rdt.Initialize(groupPrefix); err != nil {
+		return fmt.Errorf("RDT is not enabled: %v", err)
+	}
+
+	prometheusRegistry := prometheus.NewRegistry()
+	prometheusRegistry.MustRegister(rdt.NewCollector())
+	http.Handle(nativePrometheus, promhttp.HandlerFor(prometheusRegistry, promhttp.HandlerOpts{}))
+
+	if *ohttp || *ogrpc || *otext != 0 || *oprom {
+		resource, err := resource.Merge(
+			resource.Default(),
+			resource.NewWithAttributes(
+				semconv.SchemaURL,
+				semconv.ServiceName("rdt.monitor"),
+			),
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create OpenTelemetry resource: %w", err)
+		}
+
+		var (
+			ctx     = context.Background()
+			readers = []metric.Option{}
+		)
+
+		if *ohttp {
+			fmt.Printf("Setting up OpenTelemetry/HTTP metric exporter...\n")
+
+			exp, err := otlpmetrichttp.New(ctx)
+			if err != nil {
+				return fmt.Errorf("failed to create OpenTelemetry HTTP exporter: %w", err)
+			}
+			readers = append(readers, metric.WithReader(metric.NewPeriodicReader(exp)))
+		}
+
+		if *ogrpc {
+			fmt.Printf("Setting up OpenTelemetry/gRPC metric exporter...\n")
+
+			exp, err := otlpmetricgrpc.New(ctx)
+			if err != nil {
+				return fmt.Errorf("failed to create OpenTelemetry gRPC exporter: %w", err)
+			}
+			readers = append(readers, metric.WithReader(metric.NewPeriodicReader(exp)))
+		}
+
+		if *otext != 0 {
+			fmt.Printf("Setting up OpenTelemetry/stdout metric exporter...\n")
+
+			exp, err := stdoutmetric.New(
+				stdoutmetric.WithPrettyPrint(),
+				stdoutmetric.WithoutTimestamps(),
+			)
+			if err != nil {
+				return fmt.Errorf("failed to create OpenTelemetry stdout exporter: %w", err)
+			}
+			readers = append(readers,
+				metric.WithReader(
+					metric.NewPeriodicReader(exp, metric.WithInterval(*otext)),
+				),
+			)
+		}
+
+		if *oprom {
+			fmt.Printf("Setting up OpenTelemetry Prometheus exporter (HTTP %q)...\n", otelPrometheus)
+			registry := prometheus.NewRegistry()
+
+			exp, err := otelprom.New(
+				otelprom.WithNamespace(""),
+				otelprom.WithoutScopeInfo(),
+				otelprom.WithoutTargetInfo(),
+				otelprom.WithRegisterer(registry),
+			)
+			if err != nil {
+				return fmt.Errorf("failed to create OpenTelemetry Prometheus exporter: %w", err)
+			}
+
+			readers = append(readers, metric.WithReader(exp))
+
+			handlerOpts := promhttp.HandlerOpts{
+				ErrorHandling: promhttp.ContinueOnError,
+			}
+			http.Handle(otelPrometheus, promhttp.HandlerFor(registry, handlerOpts))
+		}
+
+		provider := metric.NewMeterProvider(
+			append([]metric.Option{metric.WithResource(resource)}, readers...)...,
+		)
+		defer func() {
+			if err := provider.Shutdown(ctx); err != nil {
+				slog.Error("failed to shutdown OpenTelemetry provider",
+					slog.String("error", err.Error()))
+			}
+		}()
+
+		meter := provider.Meter("rtd-monitor")
+		if err := rdt.RegisterOpenTelemetryInstruments(meter); err != nil {
+			return fmt.Errorf("failed to register OpenTelemetry instruments: %w", err)
+		}
+	}
+
+	fmt.Printf("Serving prometheus metrics at :%d/metrics\n", *port)
+	if err := http.ListenAndServe(fmt.Sprintf(":%d", *port), nil); err != nil {
+		return fmt.Errorf("error running HTTP server: %v", err)
+	}
+	return nil
 }

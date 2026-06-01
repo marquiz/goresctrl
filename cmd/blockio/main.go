@@ -22,9 +22,11 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 
 	"github.com/intel/goresctrl/pkg/blockio"
+	"github.com/intel/goresctrl/pkg/log"
 	goresctrlpath "github.com/intel/goresctrl/pkg/path"
 )
 
@@ -40,6 +42,7 @@ var examples string = `Examples:
     $ blockio -config sample.cfg -class nolimit -cgroup user.slice/mygroup
 `
 
+// nolint:errcheck
 func usage() {
 	flag.CommandLine.SetOutput(os.Stdout)
 	fmt.Fprintln(flag.CommandLine.Output(), "blockio - demo application for goresctrl/pkg/blockio API")
@@ -62,7 +65,11 @@ func main() {
 	})
 	optConfig := flag.String("config", "", "load class configuration from FILE")
 	optClass := flag.String("class", "", "use configuration of the blockio class NAME")
+	logLevel := log.NewLevelFlag(slog.LevelDebug)
+	flag.Var(logLevel, "log-level", "Set log level (debug, info, warn, error)")
 	flag.Parse()
+
+	blockio.SetLogger(slog.New(log.NewLogHandler(logLevel)))
 
 	if optConfig == nil || *optConfig == "" {
 		errorExit("missing -config=FILE")

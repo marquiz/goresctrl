@@ -1,7 +1,6 @@
 name: Verify
 on:
-  schedule:
-    - cron: '15 3 * * *'
+  push:
   pull_request:
     paths-ignore:
       - "**.md"
@@ -10,7 +9,6 @@ on:
 
 permissions:
   contents: read
-  security-events: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -20,15 +18,15 @@ jobs:
   test-and-lint:
     runs-on: ubuntu-22.04
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-    - uses: actions/setup-go@v4
+    - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
       with:
         go-version-file: go.mod
 
-    - name: Install golangci-lint
-      run: |
-        curl -sfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.54.0
+    - uses: golangci/golangci-lint-action@82606bf257cbaff209d206a39f5134f0cfbfd2ee # v9.2.1
+      with:
+        version: v2.11.2
 
     - name: Verify
       run: make verify
@@ -40,9 +38,15 @@ jobs:
       run: bash <(curl -s https://codecov.io/bash)
 
   trivy:
+    permissions:
+      contents: read
+      security-events: write
     uses: "./.github/workflows/common-trivy.yaml"
     with:
       upload-to-github-security-tab: true
 
   codeql:
+    permissions:
+      contents: read
+      security-events: write
     uses: "./.github/workflows/common-codeql.yaml"

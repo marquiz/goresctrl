@@ -13,17 +13,16 @@ on:
 
 permissions:
   contents: read
-  security-events: write
 
 jobs:
   trivy-scan-licenses:
     runs-on: ubuntu-22.04
     steps:
     - name: Checkout
-      uses: actions/checkout@v3
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
     - name: Run Trivy in fs mode
-      uses: aquasecurity/trivy-action@master
+      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
       with:
         scan-type: fs
         scan-ref: .
@@ -33,13 +32,15 @@ jobs:
 
   trivy-scan-vulns:
     runs-on: ubuntu-22.04
+    permissions:
+      security-events: write
     steps:
     - name: Checkout
-      uses: actions/checkout@v3
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
     - name: Run Trivy in fs mode
       continue-on-error: true
-      uses: aquasecurity/trivy-action@master
+      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
       with:
         scan-type: fs
         scan-ref: .
@@ -49,7 +50,7 @@ jobs:
         output: trivy-report.json
 
     - name: Show report in human-readable format
-      uses: aquasecurity/trivy-action@master
+      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
       with:
         scan-type: convert
         vuln-type: ''
@@ -59,7 +60,7 @@ jobs:
 
     - name: Convert report to sarif format
       if: ${{ inputs.upload-to-github-security-tab }}
-      uses: aquasecurity/trivy-action@master
+      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
       with:
         scan-type: convert
         vuln-type: ''
@@ -70,13 +71,13 @@ jobs:
 
     - name: Upload sarif report to GitHub Security tab
       if: ${{ inputs.upload-to-github-security-tab }}
-      uses: github/codeql-action/upload-sarif@v2
+      uses: github/codeql-action/upload-sarif@3d8036cf7fe7433e4a725cf513a6ea56c7fd0f14 # codeql-bundle-v2.25.0
       with:
        sarif_file: trivy-report.sarif
 
     - name: Convert report to csv
       if: ${{ inputs.export-csv }}
-      uses: aquasecurity/trivy-action@master
+      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
       with:
         scan-type: convert
         vuln-type: ''
@@ -88,7 +89,7 @@ jobs:
 
     - name: Upload CSV report as an artifact
       if: ${{ inputs.export-csv }}
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: trivy-report
         path: trivy-report.csv

@@ -2,7 +2,7 @@
 // +build amd64
 
 /*
-Copyright 2021 Intel Corporation
+Copyright 2026 Intel Corporation
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,8 +17,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// This file is used for auto-generation of sst_types_amd64.go
-package sst
+// This file is used for auto-generation of types_msr_amd64.go.
+// Regenerate with: go generate ./pkg/sst/...
+// Requires kernel source tree at $KERNEL_SRC_DIR (default: /usr/src/linux).
+package isst
 
 // #include <linux/isst_if.h>
 // #include <linux/ioctl.h>
@@ -26,16 +28,8 @@ package sst
 import "C"
 
 const (
-	ISST_IF_GET_PHY_ID   = C.ISST_IF_GET_PHY_ID
-	ISST_IF_IO_CMD       = C.ISST_IF_IO_CMD
-	ISST_IF_MBOX_COMMAND = C.ISST_IF_MBOX_COMMAND
+	ISST_IF_MSR_COMMAND = C.ISST_IF_MSR_COMMAND
 )
 
-type isstIfCPUMaps C.struct_isst_if_cpu_maps
-type isstIfCPUMap C.struct_isst_if_cpu_map
-
-type isstIfIoReg C.struct_isst_if_io_reg
-type isstIfIoRegs C.struct_isst_if_io_regs
-
-type isstIfMboxCmd C.struct_isst_if_mbox_cmd
-type isstIfMboxCmds C.struct_isst_if_mbox_cmds
+type MsrCmd C.struct_isst_if_msr_cmd
+type MsrCmds C.struct_isst_if_msr_cmds
